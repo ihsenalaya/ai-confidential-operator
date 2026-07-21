@@ -1,253 +1,411 @@
 # AI Confidential Operator
 
-Opérateur Kubernetes **autonome** de gouvernance confidential-computing pour workloads IA :
-chaîne d'attestation **RATS** (SEV-SNP/TDX, simulée en kind), placement vérifiable signé
-(Ed25519), libération de clés conditionnée à l'attestation, révocation bornée et journal
-d'audit chaîné. Il héberge aussi les **webhooks pods** (injection de sidecar + validation
-confidentielle).
+[![Go Reference](https://img.shields.io/badge/go-1.26-00ADD8?logo=go)](go.mod)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![CRDs](https://img.shields.io/badge/CRDs-7-informational)](docs/)
 
-Module Go indépendant (`github.com/ihsenalaya/ai-confidential-operator`), dépôt et
-historique git propres. Il s'installe et fonctionne **seul**, sans aucune dépendance
-d'exécution vers un autre opérateur.
+Un opérateur Kubernetes qui répond à une question simple : **« ce workload IA tourne-t-il
+vraiment sur du matériel sécurisé, et puis-je le prouver ? »**
 
-## Contenu du dépôt
+Il vérifie que les nœuds sont dans un environnement d'exécution matériel protégé (un
+**TEE**, *Trusted Execution Environment* — par exemple Intel TDX ou AMD SEV-SNP), place les
+pods confidentiels uniquement sur ces nœuds avec une preuve signée, ne libère les clés/secrets
+sensibles qu'aux workloads correctement attestés, et journalise tout dans une chaîne d'audit
+infalsifiable. Un mode simulé honnête permet de tester tout le flux sur un simple cluster
+`kind`, sans matériel spécial — jamais confondu avec une attestation réelle.
 
-```
-ai-confidential-operator/
-├── api/v1alpha1/                     ← 7 CRDs possédées
-├── cmd/                              ← manager + binaires satellites (voir tableau ci-dessous)
-├── internal/                         ← contrôleurs + moteurs (keyrelease, evidence, approval,
-│                                        placement, scheduler, webhook/{bootstrap,podinjector})
-├── pkg/                              ← attestation (dont provider maa), crypto, token
-├── config/                           ← manifests kustomize (crd, rbac, manager, webhook, samples)
-├── charts/ai-confidential-operator/  ← Helm chart indépendant (7 CRDs + RBAC scopé)
-├── docs/                             ← une fiche par CRD
-├── automatisation/
-│   ├── up.sh / down.sh               ← cluster kind complet en une commande (mode simulé)
-│   ├── test-apps/                    ← chaîne d'attestation simulée + policies + pod démo
-│   └── dashboards/                   ← dashboard Grafana "Attestation & Placement"
-└── Dockerfile[.<satellite>]          ← une image par binaire
-```
+C'est un module Go indépendant, installable et fonctionnel **seul**, sans dépendre d'aucun
+autre opérateur.
 
-## Architecture single-writer
+## Table des matières
 
-```
-node-attestation-agent (DaemonSet)          central-verifier (Deployment)
-        │  émet (non fiable)                        │  UNIQUE writer
-        ▼                                           ▼
-RawAttestationReport ──── appraisal RATS ──→ AttestationEvidence (status)
-                                                    │
-                              ┌─────────────────────┼──────────────────┐
-                              ▼                     ▼                  ▼
-                    AIPlacementDecision      AIKeyReleasePolicy   AIEvidenceRecord
-                    (scheduler, token        (key-release-        (audit chaîné,
-                     Ed25519 signé)           gateway)             ancrage externe)
-```
+- [Glossaire express](#glossaire-express)
+- [Fonctionnalités](#fonctionnalités)
+- [Architecture](#architecture)
+- [Les 7 CRDs, expliquées simplement](#les-7-crds-expliquées-simplement)
+- [Comment les décisions sont prises](#comment-les-décisions-sont-prises)
+- [Binaires & images](#binaires--images)
+- [Installation](#installation)
+- [Démarrage rapide (kind)](#démarrage-rapide-kind)
+- [Configuration](#configuration)
+- [Métriques Prometheus](#métriques-prometheus)
+- [Modèle de sécurité](#modèle-de-sécurité)
+- [Référence technique avancée](#référence-technique-avancée)
+- [Dépannage](#dépannage)
+- [Contribuer](#contribuer)
+- [License](#license)
 
-Le manager (`cmd/confidential-manager`) réconcilie les CRDs, bootstrappe les **runtime
-classes simulées** (`simulated-kata-qemu-tdx/snp`) et les webhooks pods. L'appraisal réel
-reste dans le binaire dédié `central-verifier` (le RBAC prouve le single-writer) ; en kind,
-l'évidence simulée est explicite (`simulated: true`, jamais convertible en évidence réelle).
+## Glossaire express
 
-## Binaires & images
+Quatre mots reviennent partout dans ce document — les comprendre suffit à lire tout le reste :
 
-Architecture multi-binaire : chaque composant a son propre `cmd/`, sa propre image, et un
-périmètre RBAC distinct.
-
-| Binaire | Rôle | Image (Dockerfile) |
-|---|---|---|
-| `confidential-manager` | Contrôleurs des 7 CRDs, bootstrap runtime classes simulées, webhooks pods | `Dockerfile` |
-| `attestation-scheduler` | Traduit une `AttestationEvidence` valide en `AIPlacementDecision` signée | `Dockerfile.attestation-scheduler` |
-| `key-release-gateway` | Libère une clé seulement contre évidence valide (`AIKeyReleasePolicy`) | `Dockerfile.key-release-gateway` |
-| `central-verifier` | Seul écrivain autorisé d'`AttestationEvidence` (appraisal RATS réel) | `Dockerfile.central-verifier` |
-| `node-attestation-agent` | DaemonSet nœud : émet les `RawAttestationReport` (provider `maa` en prod, `simulator` en kind) ; embarque l'helper C++ `guest-attestation-helper` (liaison `azguestattestation`) | `Dockerfile.node-attestation-agent` |
-
-CLI locales (non déployées en cluster, pas d'image dédiée) :
-
-| CLI | Rôle |
+| Terme | En clair |
 |---|---|
-| `sign-evidence` | Signe hors-cluster une évidence d'attestation (ConfigMap) |
-| `verify-placement` | Vérifie hors-cluster un jeton `AIPlacementDecision` (Ed25519) |
-| `sign-approval` | Utilitaire de signature Ed25519 générique (`internal/approval`), réutilisable pour des flux d'approbation côté `ai-govar-operator` — voir [Intégrations](#intégration-avec-les-autres-opérateurs) |
-
-## Fonctionnement
-
-La chaîne suit le modèle **RATS** (Remote ATtestation procedureS) avec une séparation
-stricte émetteur / vérifieur / consommateur :
-
-1. **Ingestion** — chaque nœud TEE émet un `RawAttestationReport` (rapport brut,
-   **non fiable par construction**) via le `node-attestation-agent`. En kind, le
-   provider `simulator` produit des rapports simulés explicites.
-2. **Appraisal (single-writer)** — seul le `central-verifier` (ou le mode simulé du
-   manager en dev) a le droit RBAC d'écrire une `AttestationEvidence` : le rapport brut
-   est appraisé (mesures, TCB, fraîcheur) et l'évidence résultante porte
-   `simulated: true|false` — une évidence simulée n'est **jamais convertible** en
-   évidence réelle.
-3. **Placement** — `AIPlacementDecision` confronte les évidences valides aux exigences
-   de la `ConfidentialInferencePolicy` (type de TEE, fraîcheur, runtime class, digest
-   d'image) et publie une décision **signée Ed25519**, vérifiable hors cluster.
-4. **Webhooks pods** — le manager héberge le mutating webhook (`/mutate-v1-pod`,
-   injection du sidecar confidentiel) et le validating webhook (`/validate-v1-pod`,
-   conformité runtime class / policy). En mode `warn` il annote, en mode `enforce` il
-   **rejette** les pods non conformes. Les namespaces système et celui de l'opérateur
-   sont exclus (anti-deadlock). Ce sont les **deux seuls** endpoints d'admission de cet
-   opérateur — voir la note sur `AIChangeRequest` dans [Intégrations](#intégration-avec-les-autres-opérateurs).
-5. **Libération de clés** — `AIKeyReleasePolicy` conditionne la libération d'une clé
-   (via le `key-release-gateway`) à la présence d'une évidence valide : pas
-   d'attestation → pas de clé → pas de données déchiffrées.
-6. **Révocation & audit** — `AIRevocationPolicy` révoque de façon **bornée** (par nœud,
-   par période) évidences et placements ; chaque étape est journalisée dans
-   `AIEvidenceRecord`, un journal **append-only chaîné** (hash précédent → suivant)
-   ancrable sur un checkpoint externe.
-7. **Bootstrap dev** — sur kind, le manager crée automatiquement les runtime classes
-   simulées `simulated-kata-qemu-tdx` / `simulated-kata-qemu-snp` et expose la métrique
-   `ai_simulated_runtimeclass_in_use` pour rendre le mode simulé **visible** (jamais
-   silencieux).
+| **TEE** | Une zone protégée du processeur où le code et la mémoire d'un programme sont chiffrés et invisibles même pour l'administrateur de la machine. |
+| **SEV-SNP / TDX** | Deux implémentations concrètes de TEE — AMD et Intel. Ce sont les deux seuls types supportés ici. |
+| **Attestation** | La preuve cryptographique, signée par le processeur ou le cloud, qu'un TEE donné est authentique et non trafiqué. |
+| **RATS** | Le nom du flux standard « collecter → vérifier → produire une évidence de confiance » que cet opérateur implémente. |
 
 ## Fonctionnalités
 
-- **Chaîne d'attestation RATS complète** : rapport brut → appraisal → évidence typée,
-  avec séparation émetteur/vérifieur prouvée par le RBAC (single-writer).
-- **Mode simulé honnête** pour kind/dev : SEV-SNP/TDX simulés, marqués comme tels de
-  bout en bout (CRs, métriques, dashboard) — impossible à confondre avec du TEE réel.
-- **Placement vérifiable signé** (Ed25519) : la décision de scheduler un workload
-  confidentiel est un artefact vérifiable, pas un effet de bord.
-- **Politiques par workload** (`ConfidentialInferencePolicy`) : exigences TEE,
-  fraîcheur d'évidence, runtime class, digest d'image, `reportOnly`/`warn`/`enforce`.
-- **Key-release conditionné à l'attestation** : libération de clés seulement contre
-  évidence valide, avec raisons de refus auditables.
-- **Révocation bornée** : rayon d'action limité par policy (pas de révocation globale
-  accidentelle).
-- **Audit chaîné append-only** avec ancrage externe optionnel (non-répudiation).
-- **Injection & validation de pods** par webhooks, avec exclusions anti-deadlock.
+- **Vérifie l'attestation matérielle des nœuds** et transforme un rapport brut, non fiable, en
+  une évidence de confiance signée par un seul composant autorisé à le faire.
+- **Choisit où un pod confidentiel peut tourner**, uniquement sur un nœud dont l'attestation
+  est valide et récente, et **signe la décision** (Ed25519) pour qu'elle reste vérifiable même
+  hors du cluster.
+- **Ne libère jamais une clé ou un secret** à un workload sans évidence d'attestation valide —
+  avec une raison de refus précise et lisible à chaque fois.
+- **Révoque un nœud ou une décision** pendant une durée bornée (jamais une révocation globale
+  accidentelle), avec réévaluation automatique à expiration.
+- **Journalise tout dans une chaîne d'audit** append-only (chaque entrée référence la
+  précédente par son empreinte), avec ancrage externe optionnel.
+- **Filtre et corrige les pods à l'admission** (webhooks) : annotation automatique, choix de la
+  bonne runtime class, ou rejet des pods non conformes selon la politique du namespace.
+- **Mode simulé honnête pour le développement** : tout le flux (rapport → évidence → placement
+  → clé) fonctionne sur `kind` sans matériel TEE réel, et chaque objet simulé est marqué
+  `simulated: true` de bout en bout — jamais silencieusement pris pour une attestation réelle.
+- **Une responsabilité, un binaire** : le manager, le scheduler, la gateway de clés et le
+  vérificateur d'attestation sont des processus et des permissions Kubernetes (RBAC) séparés,
+  pas seulement des couches de code — voir [Modèle de sécurité](#modèle-de-sécurité).
 
-## CRDs possédées (7)
+## Architecture
 
-| CRD | shortName | Rôle | Doc |
-|---|---|---|---|
-| ConfidentialInferencePolicy | `cip` | Exigences TEE/fraîcheur/runtime d'un workload | [docs/confidentialinferencepolicy.md](docs/confidentialinferencepolicy.md) |
-| RawAttestationReport | `rar` | Rapport brut non appraisé (agent nœud) | [docs/rawattestationreport.md](docs/rawattestationreport.md) |
-| AttestationEvidence | `aevid` | Évidence appraisée (single-writer) | [docs/attestationevidence.md](docs/attestationevidence.md) |
-| AIPlacementDecision | `apd` | Décision de placement signée | [docs/aiplacementdecision.md](docs/aiplacementdecision.md) |
-| AIKeyReleasePolicy | `akrp` | Libération de clé conditionnée à l'attestation | [docs/aikeyreleasepolicy.md](docs/aikeyreleasepolicy.md) |
-| AIRevocationPolicy | `airvp` | Révocation bornée d'évidence/placement | [docs/airevocationpolicy.md](docs/airevocationpolicy.md) |
-| AIEvidenceRecord | `aier` | Journal d'audit append-only chaîné | [docs/aievidencerecord.md](docs/aievidencerecord.md) |
+```
+node-attestation-agent (DaemonSet)          central-verifier (Deployment)
+        │  collecte (non fiable)                     │  SEUL autorisé à écrire
+        ▼                                             ▼
+RawAttestationReport ──── vérification ──────→ AttestationEvidence
+                                                       │
+                              ┌────────────────────────┼───────────────────┐
+                              ▼                        ▼                   ▼
+                    AIPlacementDecision       AIKeyReleasePolicy     AIEvidenceRecord
+                    (attestation-scheduler,    (key-release-          (audit chaîné,
+                     jeton Ed25519 signé)       gateway)               ancrage externe)
+```
+
+Le manager (`confidential-manager`) réconcilie les CRDs de politique et d'audit, prépare
+l'environnement `kind` (runtime classes simulées), et filtre les pods à l'admission. La
+vérification d'attestation elle-même est isolée dans un binaire séparé, `central-verifier` —
+volontairement, pour que ce soit les permissions Kubernetes, et non une simple convention de
+code, qui garantissent qu'aucun autre composant ne peut fabriquer une évidence.
+
+> Deux réconciliateurs de compatibilité existent mais sont **désactivés par défaut**
+> (`AIOPS_ENABLE_LEGACY_EVIDENCE_RECONCILER`, `AIOPS_ENABLE_EMBEDDED_VERIFIER`) — utiles pour
+> un déploiement mono-binaire en dev, jamais recommandés en production. Détails dans la
+> [référence technique](#référence-technique-avancée).
+
+## Les 7 CRDs, expliquées simplement
+
+Chaque CRD a une fiche complète dans [`docs/`](docs/) (tous les champs, tout le status). Ici :
+une explication en une phrase, un exemple minimal, et ce qu'il faut retenir.
+
+### 1. ConfidentialInferencePolicy — la règle du jeu
+
+*« Les pods de ce namespace doivent tourner sur tel TEE, avec une évidence pas trop vieille,
+sinon je préviens / je bloque. »*
+
+```yaml
+apiVersion: aiops.imperium.io/v1alpha1
+kind: ConfidentialInferencePolicy
+metadata:
+  name: llm-workloads-must-be-attested
+  namespace: production
+spec:
+  target:
+    workloadSelector:
+      matchLabels: { ai-workload: "true" }
+  enforcementMode: enforce        # warn | enforce | audit
+  maxEvidenceAgeSeconds: 300
+  requiredTEE: [SEV-SNP]
+  requireConfidentialContainers: true
+```
+
+À retenir : c'est une politique de référence, lue par les webhooks et le scheduler — elle n'a
+**pas de contrôleur qui la réconcilie en tâche de fond**, donc pas de `status` qui se met à
+jour tout seul. → [Détails](docs/confidentialinferencepolicy.md)
+
+### 2. RawAttestationReport — la preuve brute, pas encore fiable
+
+*« Voici ce que le nœud prétend, ne me croyez pas encore. »* Créé automatiquement par
+`node-attestation-agent` toutes les `REPORT_INTERVAL_SECONDS` — vous ne l'écrivez jamais à la
+main :
+
+```bash
+kubectl get rawattestationreport -n confidential-system
+```
+
+→ [Détails](docs/rawattestationreport.md)
+
+### 3. AttestationEvidence — le verdict officiel
+
+*« Voici le résultat vérifié : ce nœud est bien dans un TDX/SEV-SNP authentique, valide
+jusqu'à telle date. »* Créé automatiquement par `central-verifier` à partir du rapport
+ci-dessus — vous ne l'écrivez pas non plus, vous le consultez :
+
+```bash
+kubectl get attestationevidence -n confidential-system -o wide
+```
+
+À retenir : `status.evidenceMode` vaut `real`, `simulated` ou `unverified` — c'est le champ
+que tout le reste du système regarde. → [Détails](docs/attestationevidence.md)
+
+### 4. AIPlacementDecision — le droit de tourner ici, signé
+
+*« Ce pod a le droit de tourner sur ce nœud, et voici la preuve signée cryptographiquement. »*
+Créé automatiquement par `attestation-scheduler` quand il place un pod — consultation :
+
+```bash
+kubectl get aiplacementdecision -n production
+```
+
+→ [Détails](docs/aiplacementdecision.md)
+
+### 5. AIKeyReleasePolicy — le gardien des clés
+
+*« Ne libère jamais cette clé/ce secret à un workload sans évidence d'attestation valide. »*
+
+```yaml
+apiVersion: aiops.imperium.io/v1alpha1
+kind: AIKeyReleasePolicy
+metadata:
+  name: model-weights-release
+  namespace: production
+spec:
+  target:
+    workloadSelector:
+      matchLabels: { ai-workload: "true" }
+  enforcementMode: enforce
+  requireAttestedEvidence: true
+  allowedSecrets: [model-weights-secret]
+  keyRelease: { required: true, ttlSeconds: 300 }
+  audit: { required: true, level: full }
+```
+
+→ [Détails](docs/aikeyreleasepolicy.md) · la règle de décision exacte est expliquée
+[plus bas](#comment-les-décisions-sont-prises).
+
+### 6. AIRevocationPolicy — couper court, mais pas pour toujours
+
+*« Révoque ce nœud ou cette décision pendant X secondes, puis réévalue automatiquement. »*
+
+```yaml
+apiVersion: aiops.imperium.io/v1alpha1
+kind: AIRevocationPolicy
+metadata:
+  name: revoke-compromised-node
+  namespace: production
+spec:
+  target:
+    nodeName: worker-3
+  ttlSeconds: 3600
+  reasons: ["suspected key compromise"]
+```
+
+À retenir : la fenêtre est **toujours bornée** (`ttlSeconds`) — impossible de révoquer
+« pour toujours » par erreur. → [Détails](docs/airevocationpolicy.md)
+
+### 7. AIEvidenceRecord — la ligne d'audit infalsifiable
+
+*« Voici l'entrée N de la chaîne d'audit, elle référence l'entrée N-1 par son empreinte. »*
+Alimenté par le flux d'audit (attestation, placement, libération de clé, révocation) — chaque
+entrée est immuable une fois créée :
+
+```bash
+kubectl get aievidencerecord -n confidential-system
+```
+
+→ [Détails](docs/aievidencerecord.md)
+
+## Comment les décisions sont prises
+
+Vue simple d'abord ; le détail exact (codes de refus, algorithme du scheduler) est dans la
+[référence technique avancée](#référence-technique-avancée).
+
+- **Libération de clé** : une clé n'est jamais libérée si la politique n'est pas satisfaite,
+  si l'évidence est absente/révoquée/expirée, ou si le jeton de placement ne correspond pas
+  exactement au pod/à l'image/au modèle attendus. Chaque refus a une raison machine-lisible
+  précise (ex. `EVIDENCE_EXPIRED`, `POD_UID_MISMATCH`).
+- **Placement d'un pod** : le scheduler ne retient que les nœuds avec une évidence valide et
+  fraîche, revérifie tout **une seconde fois juste avant de lier le pod** (pour ne rien laisser
+  changer entre la sélection et l'exécution), puis seulement à ce moment-là signe et publie la
+  décision.
+- **Admission des pods** : un pod couvert par une `ConfidentialInferencePolicy` peut être
+  annoté/corrigé automatiquement (runtime class, scheduler) ou rejeté selon que la politique est
+  en `warn`, `audit` ou `enforce`.
+
+## Binaires & images
+
+| Binaire | Rôle en une phrase | Image |
+|---|---|---|
+| `confidential-manager` | Réconcilie les politiques et l'audit, prépare le mode simulé, filtre les pods à l'admission. | `Dockerfile` |
+| `attestation-scheduler` | Un second scheduler Kubernetes qui ne place les pods confidentiels que sur des nœuds attestés, et signe sa décision. | `Dockerfile.attestation-scheduler` |
+| `central-verifier` | Le seul composant autorisé à transformer un rapport brut en évidence de confiance. | `Dockerfile.central-verifier` |
+| `key-release-gateway` | Service HTTP qui décide d'autoriser ou refuser la libération d'une clé/d'un secret. | `Dockerfile.key-release-gateway` |
+| `node-attestation-agent` | Tourne sur chaque nœud (DaemonSet), collecte la preuve d'attestation matérielle. | `Dockerfile.node-attestation-agent` |
+| `guest-attestation-helper` | Petit binaire C++ utilisé par l'agent ci-dessus pour parler à Azure en production. | intégré à l'image `node-attestation-agent` |
+
+Trois petits outils en ligne de commande (à lancer localement, jamais déployés en cluster) :
+`sign-evidence` (signe un ConfigMap d'évidence hors cluster), `verify-placement` (vérifie un
+jeton de placement hors cluster) et `sign-approval` (signe une décision humaine générique,
+réutilisable par d'autres opérateurs sans créer de dépendance réseau).
 
 ## Installation
 
 ### Prérequis
 
 - Kubernetes ≥ 1.29, Helm ≥ 3.12.
-- **Production** : nœuds SEV-SNP/TDX (ex. AKS confidential), Microsoft Azure Attestation
-  (provider `maa`), les déploiements `central-verifier`, `node-attestation-agent` et
-  `key-release-gateway` (images publiées sur le même registre `ghcr.io/ihsenalaya/ai-confidential-operator/*`).
-- **kind/dev** : rien d'autre — le mode simulé est bootstrappé automatiquement.
+- **En production** : des nœuds SEV-SNP ou TDX réels (ex. AKS confidential-computing) et
+  Microsoft Azure Attestation.
+- **En local (kind)** : rien de spécial — le mode simulé est activé automatiquement.
 
-### Installation du chart
+### Installer le chart
 
 ```bash
 helm install confidential ./charts/ai-confidential-operator \
   --namespace confidential-system --create-namespace
 ```
 
-Image par défaut : `ghcr.io/ihsenalaya/ai-confidential-operator/confidential-operator`.
-Valeurs utiles :
-
-```bash
-# Image locale (kind) :
---set image.repository=confidential-operator --set image.tag=dev --set image.pullPolicy=Never
-# Prometheus Operator :
---set metrics.serviceMonitor.enabled=true --set metrics.serviceMonitor.labels.release=monitoring
-# Fallbacks embarqués dev-only (le single-writer reste le central-verifier) :
---set compat.enableEmbeddedVerifier=true
-```
-
-### Vérification
-
 ```bash
 kubectl -n confidential-system get deploy
-kubectl get runtimeclasses | grep simulated       # bootstrappées par l'opérateur
-kubectl get mutatingwebhookconfigurations aiops-sidecar-injector
+kubectl get runtimeclasses | grep simulated
 ```
 
-## Démarrage rapide kind (tout-en-un)
+## Démarrage rapide (kind)
 
 ```bash
 cd automatisation
-./up.sh          # kind + Prometheus/Grafana + opérateur + chaîne simulée + dashboard
+./up.sh      # crée un cluster kind, installe l'opérateur et une démo simulée complète
 ```
-
-Les applications de test (`confidential-demo`) installent : une
-`ConfidentialInferencePolicy` (warn), un `RawAttestationReport` simulé, une
-`AttestationEvidence` SEV-SNP simulée, un `AIEvidenceRecord`, une `AIKeyReleasePolicy`,
-une `AIRevocationPolicy` et un **pod démo** sur la runtime class `simulated-kata-qemu-snp`
-(validé par le webhook).
 
 ```bash
 kubectl -n confidential-demo get cip,rar,aevid,akrp,airvp,aier
-kubectl -n confidential-demo get pod confidential-demo-app -o jsonpath='{.spec.runtimeClassName}'
 ```
-
-Grafana : `kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80`
-→ dashboard **AI Confidential Operator — Attestation & Placement** (réconciliations
-par contrôleur et erreurs, taux de succès et latence p99 des webhooks pods, workqueue,
-runtime class simulée en usage, latences de réconciliation p50/p95/p99).
 
 Démontage : `./down.sh`.
 
-## Utilisation
+## Configuration
 
-### Passer en mode enforce
+Variables les plus utiles (liste complète par binaire dans [`docs/`](docs/) et le code de
+chaque `cmd/*/main.go`) :
 
-```yaml
-spec:
-  enforcementMode: enforce   # le webhook rejette les pods non conformes
-```
+| Variable | Binaire | Rôle |
+|---|---|---|
+| `AIOPS_PLATFORM_MODE` | manager | `simulated-kind` (défaut) pour le dev, `production`/`aks*` pour du matériel réel. |
+| `SCHEDULER_SIGNING_KEY_HEX` | scheduler | Clé de signature Ed25519 — **à fixer explicitement en production**, sinon clé jetable générée au démarrage. |
+| `TOKEN_PUBLIC_KEY_HEX` | key-release-gateway | Clé publique pour vérifier les jetons — sans elle, les signatures ne sont **pas** vérifiées. |
+| `EXPECTED_TEE` | central-verifier | Type d'attestation attendu (`sevsnpvm` par défaut). |
+| `REPORT_INTERVAL_SECONDS` | node-attestation-agent | Fréquence d'émission des rapports (60s par défaut). |
 
-Le webhook de validation exclut les namespaces système et le namespace de l'opérateur
-(anti-deadlock) ; la politique s'applique aux namespaces sélectionnés par `target`.
+## Métriques Prometheus
 
-### Production (TEE réel)
+| Métrique | Rôle |
+|---|---|
+| `ai_simulated_runtimeclass_in_use` | Signale qu'un pod tourne en mode simulé — jamais silencieux. |
+| `ai_key_release_requests_total` | Nombre de demandes de clé, par issue (`allowed`/`denied`). |
+| `ai_key_release_latency_seconds` | Latence de la décision de libération de clé. |
 
-1. Déployer `central-verifier` + `node-attestation-agent` (DaemonSet) + `key-release-gateway`.
-2. Les agents émettent des `RawAttestationReport` (provider `maa`) ; le verifier produit les
-   `AttestationEvidence` avec `evidenceMode: real`.
-3. `ConfidentialInferencePolicy` en `enforce`, avec `requireImageDigest` et TTL courts.
-4. La chaîne d'audit `AIEvidenceRecord` peut être ancrée sur un checkpoint externe.
+`attestation-scheduler` et `central-verifier` exposent aussi les métriques standard de
+reconciliation de controller-runtime.
 
-## Intégration avec les autres opérateurs
+## Modèle de sécurité
 
-Aucune dépendance d'exécution : `ai-finops-operator` et `ai-govar-operator` fonctionnent
-sans `ai-confidential-operator`, et réciproquement. Sur un même cluster, chaque chart
-n'installe que ses propres CRDs et son propre RBAC.
+- Un agent de nœud compromis ne peut mentir que dans son propre rapport brut — il n'a jamais
+  le droit RBAC d'écrire une évidence.
+- La validation des pods est fail-closed (bloque en cas de doute), la mutation est fail-open
+  (ne bloque jamais un pod par indisponibilité du webhook) — un choix délibéré, pas un oubli.
+- Toute décision de placement est revérifiée une deuxième fois juste avant d'être exécutée.
+- Rien n'est silencieux : mode simulé, clé de signature manquante, ou vérification de jeton
+  désactivée déclenchent tous un avertissement explicite au démarrage ou un marquage visible
+  sur l'objet concerné.
+- Aucune dépendance d'exécution vers `ai-finops-operator` ou `ai-govar-operator` — cet
+  opérateur fonctionne seul.
 
-- **Webhooks pods, propres à cet opérateur** : `/mutate-v1-pod` et `/validate-v1-pod`
-  sont les deux seuls endpoints d'admission enregistrés par `confidential-manager`
-  (`bootstrap.Scope = ScopePods`). Il n'y a **aucune délégation en cours d'exécution**
-  vers l'admission `AIChangeRequest` de `ai-govar-operator` : une branche héritée du
-  webhook pods qui appelait conditionnellement le code d'approbation de `govar` était
-  du **code mort** (la seule scope réellement enregistrée par ce manager ne pouvait
-  jamais l'atteindre) — elle a été supprimée, pas dupliquée.
-- **Utilitaire de signature partagé, optionnel** : la CLI `sign-approval` (et le paquet
-  `internal/approval`) implémentent la primitive de signature Ed25519 qui lie une
-  décision d'approbation humaine à un `AIChangeRequest` — c'est un utilitaire
-  cryptographique autonome, indépendant du webhook pods, utile si vous exploitez ce
-  binaire aux côtés d'`ai-govar-operator` (qui possède la CRD `AIChangeRequest` et son
-  propre webhook d'admission). Il ne crée pas de dépendance réseau ou API entre les
-  deux opérateurs.
-- **Runtime classes simulées et évidences** : purement locales à ce cluster/opérateur,
-  aucun état partagé avec `ai-finops-operator`/`ai-govar-operator`.
+## Référence technique avancée
 
-> Ne pas installer ce chart **et** un ancien chart monolithique qui enregistrerait aussi
-> les webhooks pods sur le même cluster (double enregistrement de
-> `mutatingwebhookconfigurations`/`validatingwebhookconfigurations`).
+Cette section détaille l'algorithme exact pour qui doit l'auditer ou le déboguer en
+profondeur — pas nécessaire pour une utilisation normale.
 
-## Statut
+<details>
+<summary><strong>Règle exacte de libération de clé</strong> (<code>internal/keyrelease/keyrelease.go</code>)</summary>
 
-Déployé et vérifié bout en bout sur kind (mode simulé) : runtime classes simulées
-bootstrappées, webhooks pods `/mutate-v1-pod` + `/validate-v1-pod` répondant HTTP 200,
-chaîne d'attestation simulée bout en bout (`RawAttestationReport` → `AttestationEvidence`
-→ `AIPlacementDecision`/`AIKeyReleasePolicy`/`AIEvidenceRecord`), pod démo planifié sur
-`simulated-kata-qemu-snp` et validé par le webhook, dashboard Grafana **AI Confidential
-Operator — Attestation & Placement** importé et aligné sur les métriques `ai_*` réellement
-exposées.
+Évaluée dans cet ordre, la première condition qui matche l'emporte :
+
+1. `policyRequired == false` → **allow** immédiat.
+2. `policyTTLSeconds <= 0` → **deny** (`TTL_INVALID`).
+3. Révocation active → **deny** (`REVOCATION_ACTIVE`).
+4. Évidence révoquée → **deny** (`EVIDENCE_REVOKED`).
+5. Évidence non vérifiée → **deny** (`EVIDENCE_NOT_VERIFIED`).
+6. Évidence trop vieille → **deny** (`EVIDENCE_EXPIRED`).
+7. Jeton de placement fourni mais invalide/expiré/ne correspondant pas exactement au pod,
+   à l'image, au modèle ou à la politique → **deny** avec le code précis (`TOKEN_EXPIRED`,
+   `POD_UID_MISMATCH`, `MODEL_DIGEST_MISMATCH`, `IMAGE_DIGEST_MISMATCH`,
+   `POLICY_HASH_MISMATCH`, `TOKEN_INVALID`).
+8. Audit requis mais aucune preuve fournie → **deny** (`AUDIT_REQUIRED_NOT_MET`).
+9. Sinon → **allow**.
+
+**Nuance importante** : le contrôleur `AIKeyReleasePolicyReconciler` (celui qui met à jour
+`status.lastDecision` sur le CRD) n'alimente que 4 des signaux ci-dessus (policy, TTL,
+évidence vérifiée/révoquée). La vérification complète du jeton et des digests n'a lieu que
+lors d'un appel réel à `key-release-gateway` (`POST /v1/key-release`) — le status du CRD est
+donc une vérification partielle, la décision opposable se fait au moment de l'appel HTTP.
+
+</details>
+
+<details>
+<summary><strong>Algorithme du scheduler d'attestation</strong> (<code>attestation-scheduler</code>)</summary>
+
+1. **Filter** : ne garde que les nœuds avec au moins une évidence valide, non révoquée, fraîche
+   et du bon type de TEE.
+2. **Permit** : attend jusqu'à 15s qu'un nœud devienne éligible si aucun ne l'est encore.
+3. **Score** : jusqu'à 50 points de fraîcheur, +20 si l'évidence n'est pas simulée, +10/+5 pour
+   TDX/SEV-SNP.
+4. **Reserve → PreBind fail-closed** : juste avant de lier le pod, tout est revérifié une
+   seconde fois (politique, révocation, fraîcheur) pour fermer la fenêtre entre la sélection et
+   l'exécution — un échec ici annule la décision et n'émet **aucun jeton**.
+5. **Mint** : le jeton Ed25519 lie `podUID`, le hash du pod, les digests d'image/modèle,
+   l'identité du nœud et le hash de la politique, avec une expiration (5 min par défaut).
+6. **Bind** : le pod est lié au nœud.
+
+`verify-placement` vérifie ce jeton entièrement hors cluster, à partir de la clé publique
+seule.
+
+</details>
+
+<details>
+<summary><strong>Webhooks pods : ce qu'ils font exactement</strong> (<code>internal/webhook/podinjector</code>)</summary>
+
+- `/mutate-v1-pod` (fail-open) : pose des annotations de traçabilité, applique la runtime
+  class attendue si absente, force le scheduler d'attestation, ajoute une scheduling gate tant
+  qu'aucune évidence n'est déjà attachée au pod. **Ce même point d'entrée héberge aussi**, de
+  façon totalement indépendante de l'attestation, une fonctionnalité générique d'injection de
+  sidecar proxy pilotée par annotations — sans lien avec la confidentialité, à ne pas confondre.
+- `/validate-v1-pod` (fail-closed) : rejette un pod si l'image n'est pas pinée par digest quand
+  requis, si la runtime class n'est pas autorisée, si un GPU confidentiel est demandé (non
+  implémenté — toujours refusé explicitement), ou si une runtime class simulée est utilisée en
+  mode production.
+
+Les deux excluent par construction les namespaces système et celui de l'opérateur lui-même.
+
+</details>
+
+## Dépannage
+
+- **Pod bloqué en `Pending` avec une scheduling gate** : vérifiez que la chaîne
+  `RawAttestationReport → AttestationEvidence` a bien tourné (`kubectl get aevid -o wide`) et
+  que `schedulerName: ai-attestation-scheduler` est bien posé sur le pod.
+- **`AIPlacementDecision` reste `pending`/`deny` sans jeton** : la revérification juste avant le
+  bind a probablement échoué — regardez les logs `attestation-scheduler` (`prebind: ...`).
+- **`key-release-gateway` répond `TOKEN_INVALID`** : `TOKEN_PUBLIC_KEY_HEX` sur la gateway ne
+  correspond pas à la clé utilisée par `attestation-scheduler`.
+- **Un pod non conforme n'est pas rejeté** : vérifiez `enforcementMode` — seul `enforce` bloque
+  réellement, `warn`/`audit` se contentent d'observer.
+- **Runtime class simulée refusée** : normal en mode production — c'est volontaire.
+
+## Contribuer
+
+Les contributions sont bienvenues : ouvrez une issue avant une PR conséquente, gardez les
+commits atomiques, et vérifiez que `go build ./...`, `go vet ./...` et `go test ./...` passent.
+
+## License
+
+[Apache License 2.0](LICENSE).
