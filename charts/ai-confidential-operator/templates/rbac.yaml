@@ -1,0 +1,81 @@
+{{- if .Values.rbac.create -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "operator.fullname" . }}-manager-role
+  labels:
+    {{- include "operator.labels" . | nindent 4 }}
+rules:
+# Evidence audit records may be exported to ConfigMaps.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces", "pods", "serviceaccounts"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+# Webhook self-registration (pod injection / validation).
+- apiGroups: ["admissionregistration.k8s.io"]
+  resources: ["mutatingwebhookconfigurations", "validatingwebhookconfigurations"]
+  verbs: ["create", "get", "list", "patch", "update", "watch"]
+# Simulated runtime classes for kind development.
+- apiGroups: ["node.k8s.io"]
+  resources: ["runtimeclasses"]
+  verbs: ["create", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["aiops.imperium.io"]
+  resources:
+  - aievidencerecords
+  - aikeyreleasepolicies
+  - aiplacementdecisions
+  - airevocationpolicies
+  - attestationevidences
+  - rawattestationreports
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["aiops.imperium.io"]
+  resources:
+  - aievidencerecords/finalizers
+  - aikeyreleasepolicies/finalizers
+  - aiplacementdecisions/finalizers
+  - airevocationpolicies/finalizers
+  - attestationevidences/finalizers
+  - rawattestationreports/finalizers
+  verbs: ["update"]
+- apiGroups: ["aiops.imperium.io"]
+  resources:
+  - aievidencerecords/status
+  - aikeyreleasepolicies/status
+  - aiplacementdecisions/status
+  - airevocationpolicies/status
+  - attestationevidences/status
+  - rawattestationreports/status
+  verbs: ["get", "patch", "update"]
+# The pod webhooks consume confidential inference policies read-only.
+- apiGroups: ["aiops.imperium.io"]
+  resources: ["confidentialinferencepolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch"]
+{{- if .Values.leaderElection.enabled }}
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "get", "list", "update", "watch"]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "operator.fullname" . }}-manager-rolebinding
+  labels:
+    {{- include "operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "operator.fullname" . }}-manager-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

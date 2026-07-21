@@ -1,0 +1,557 @@
+{
+ "annotations": {
+  "list": []
+ },
+ "editable": true,
+ "schemaVersion": 39,
+ "title": "AI Confidential Operator — Attestation & Placement",
+ "tags": [
+  "ai-confidential",
+  "attestation",
+  "sev-snp"
+ ],
+ "templating": {
+  "list": [
+   {
+    "name": "datasource",
+    "type": "datasource",
+    "query": "prometheus",
+    "current": {}
+   }
+  ]
+ },
+ "time": {
+  "from": "now-1h",
+  "to": "now"
+ },
+ "refresh": "1m",
+ "panels": [
+  {
+   "type": "row",
+   "title": "Confidential Operator — Réconciliation & Webhooks",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "id": 60
+  },
+  {
+   "type": "stat",
+   "title": "Reconciliations (success)",
+   "id": 61,
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 6,
+    "h": 6
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "center"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 1
+       },
+       {
+        "color": "green",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "short"
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum(controller_runtime_reconcile_total{result=\"success\"})",
+     "legendFormat": "successful reconciles",
+     "refId": "A"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "Total successful reconciliations across the confidential controllers (AttestationEvidence, AIPlacementDecision, AIKeyReleasePolicy, AIRevocationPolicy, AIEvidenceRecord)."
+  },
+  {
+   "type": "stat",
+   "title": "Reconcile success / errors",
+   "id": 62,
+   "gridPos": {
+    "x": 6,
+    "y": 1,
+    "w": 6,
+    "h": 6
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "center"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "blue",
+        "value": null
+       }
+      ]
+     },
+     "unit": "short"
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum(controller_runtime_reconcile_total{result=\"success\"})",
+     "legendFormat": "success",
+     "refId": "A"
+    },
+    {
+     "expr": "sum(controller_runtime_reconcile_errors_total)",
+     "legendFormat": "errors",
+     "refId": "B"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   }
+  },
+  {
+   "type": "gauge",
+   "title": "Webhooks pods — Success Rate (%)",
+   "id": 63,
+   "gridPos": {
+    "x": 12,
+    "y": 1,
+    "w": 6,
+    "h": 6
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "showThresholdLabels": false,
+    "showThresholdMarkers": true
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 50
+       },
+       {
+        "color": "green",
+        "value": 80
+       }
+      ]
+     },
+     "unit": "percent",
+     "min": 0,
+     "max": 100
+    }
+   },
+   "targets": [
+    {
+     "expr": "100 * sum(controller_runtime_webhook_requests_total{code=\"200\"}) / (sum(controller_runtime_webhook_requests_total) > 0)",
+     "legendFormat": "success rate",
+     "refId": "A"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "HTTP 200 ratio of the pod injection/validation webhooks (/mutate-v1-pod, /validate-v1-pod)."
+  },
+  {
+   "type": "piechart",
+   "title": "Réconciliations par contrôleur",
+   "id": 64,
+   "gridPos": {
+    "x": 18,
+    "y": 1,
+    "w": 6,
+    "h": 6
+   },
+   "options": {
+    "pieType": "donut",
+    "displayLabels": [
+     "name",
+     "percent"
+    ],
+    "legend": {
+     "displayMode": "table",
+     "placement": "right"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     }
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum by (controller) (controller_runtime_reconcile_total)",
+     "legendFormat": "{{controller}}",
+     "refId": "A"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Reconcile rate over time (by controller)",
+   "id": 65,
+   "gridPos": {
+    "x": 0,
+    "y": 7,
+    "w": 12,
+    "h": 8
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "palette-classic"
+     },
+     "unit": "short"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "errors"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "fixedColor": "red",
+         "mode": "fixed"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "targets": [
+    {
+     "expr": "sum by (controller) (rate(controller_runtime_reconcile_total[5m]))",
+     "legendFormat": "{{controller}}",
+     "refId": "A"
+    },
+    {
+     "expr": "sum(rate(controller_runtime_reconcile_errors_total[5m]))",
+     "legendFormat": "errors",
+     "refId": "B"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   }
+  },
+  {
+   "type": "bargauge",
+   "title": "Webhook requests (endpoint / code HTTP)",
+   "id": 66,
+   "gridPos": {
+    "x": 12,
+    "y": 7,
+    "w": 12,
+    "h": 8
+   },
+   "options": {
+    "orientation": "horizontal",
+    "displayMode": "gradient",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 1
+       },
+       {
+        "color": "red",
+        "value": 10
+       }
+      ]
+     },
+     "unit": "short"
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum by (webhook, code) (controller_runtime_webhook_requests_total)",
+     "legendFormat": "{{webhook}} — HTTP {{code}}",
+     "refId": "A"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   }
+  },
+  {
+   "type": "table",
+   "title": "Workqueue depth (par contrôleur)",
+   "id": 67,
+   "gridPos": {
+    "x": 0,
+    "y": 15,
+    "w": 12,
+    "h": 8
+   },
+   "options": {
+    "frameIndex": 0,
+    "showHeader": true
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "unit": "short"
+    }
+   },
+   "targets": [
+    {
+     "expr": "sum by (name) (workqueue_depth{job=~\".*ai-confidential-operator.*\"})",
+     "legendFormat": "{{name}}",
+     "refId": "A",
+     "instant": true,
+     "format": "table"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "Backlog of pending reconcile items per controller workqueue (0 = the operator keeps up)."
+  },
+  {
+   "type": "stat",
+   "title": "Webhook p99 latency",
+   "id": 68,
+   "gridPos": {
+    "x": 12,
+    "y": 15,
+    "w": 12,
+    "h": 8
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "colorMode": "background",
+    "graphMode": "area",
+    "justifyMode": "center",
+    "text": {}
+   },
+   "fieldConfig": {
+    "defaults": {
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "yellow",
+        "value": 0.5
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "s",
+     "displayName": "p99 latency"
+    }
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_webhook_latency_seconds_bucket[5m])))",
+     "legendFormat": "p99",
+     "refId": "A"
+    }
+   ],
+   "datasource": {
+    "type": "prometheus",
+    "uid": "${datasource}"
+   },
+   "description": "99th percentile latency of the pod injection/validation admission webhooks."
+  },
+  {
+   "type": "row",
+   "title": "Environnement d'exécution",
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 23
+   },
+   "collapsed": false,
+   "panels": []
+  },
+  {
+   "type": "stat",
+   "title": "Simulated runtimeclass in use",
+   "datasource": "${datasource}",
+   "gridPos": {
+    "h": 6,
+    "w": 6,
+    "x": 0,
+    "y": 24
+   },
+   "fieldConfig": {
+    "defaults": {}
+   },
+   "targets": [
+    {
+     "expr": "max(ai_simulated_runtimeclass_in_use)",
+     "refId": "A"
+    }
+   ],
+   "description": "1 = the cluster is running the SIMULATED confidential runtime classes (kind/dev). 0 = real TEE runtime."
+  },
+  {
+   "type": "stat",
+   "title": "Workqueue backlog (total)",
+   "datasource": "${datasource}",
+   "gridPos": {
+    "h": 6,
+    "w": 6,
+    "x": 6,
+    "y": 24
+   },
+   "fieldConfig": {
+    "defaults": {}
+   },
+   "targets": [
+    {
+     "expr": "sum(workqueue_depth{job=~\".*ai-confidential-operator.*\"})",
+     "refId": "A"
+    }
+   ],
+   "description": "Total pending reconcile items across all confidential controllers (renewal / appraisal pressure)."
+  },
+  {
+   "type": "timeseries",
+   "title": "Latence de réconciliation (p50 / p95 / p99)",
+   "datasource": "${datasource}",
+   "gridPos": {
+    "h": 7,
+    "w": 12,
+    "x": 12,
+    "y": 24
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    }
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket[5m])))",
+     "refId": "A",
+     "legendFormat": "p50"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket[5m])))",
+     "refId": "B",
+     "legendFormat": "p95"
+    },
+    {
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket[5m])))",
+     "refId": "C",
+     "legendFormat": "p99"
+    }
+   ],
+   "description": "Reconciliation latency percentiles across the confidential controllers."
+  }
+ ],
+ "uid": "ai-confidential-operator-v01",
+ "version": 2
+}

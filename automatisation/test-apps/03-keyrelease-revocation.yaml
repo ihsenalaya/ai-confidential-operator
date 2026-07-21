@@ -1,0 +1,59 @@
+# Key-release and revocation policies bound to the attested evidence, plus a
+# demo pod running on the simulated confidential runtime class.
+apiVersion: aiops.imperium.io/v1alpha1
+kind: AIKeyReleasePolicy
+metadata:
+  name: demo-key-release
+spec:
+  target:
+    namespaceSelector:
+      matchLabels:
+        confidential-ai/enabled: "true"
+  requireAttestedEvidence: true
+  evidenceRef:
+    name: demo-node-evidence
+  enforcementMode: warn
+---
+apiVersion: aiops.imperium.io/v1alpha1
+kind: AIRevocationPolicy
+metadata:
+  name: demo-revocation
+spec:
+  target:
+    namespaceSelector:
+      matchLabels:
+        confidential-ai/enabled: "true"
+  evidenceRef:
+    name: demo-node-evidence
+  ttlSeconds: 86400
+---
+# Demo workload on the simulated confidential runtime class. The validating
+# webhook checks it against the ConfidentialInferencePolicy (warn mode).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: confidential-demo-app
+  labels:
+    app: confidential-demo-app
+spec:
+  runtimeClassName: simulated-kata-qemu-snp
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "echo confidential demo workload; sleep infinity"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    seccompProfile:
+      type: RuntimeDefault

@@ -1,0 +1,21 @@
+# Confidential inference policy for the demo namespace: workloads must run
+# on an accepted TEE with fresh evidence. "warn" keeps the kind demo
+# non-blocking; switch to "enforce" to make the validating webhook reject
+# non-compliant pods.
+apiVersion: aiops.imperium.io/v1alpha1
+kind: ConfidentialInferencePolicy
+metadata:
+  name: demo-confidential-policy
+spec:
+  target:
+    namespaceSelector:
+      matchLabels:
+        confidential-ai/enabled: "true"
+  requiredTEE:
+    - SEV-SNP
+    - TDX
+  maxEvidenceAgeSeconds: 3600
+  allowedRuntimeClasses:
+    - simulated-kata-qemu-snp
+    - simulated-kata-qemu-tdx
+  enforcementMode: warn

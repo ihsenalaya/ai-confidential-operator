@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# One-command kind deployment of the ai-confidential-operator with all its
+# dependencies: kind cluster, Prometheus + Grafana, the operator chart
+# (simulated TEE mode), demo test applications (simulated attestation chain),
+# and the attestation dashboard.
+#
+# Usage:  ./up.sh            # full stack
+#         SKIP_MONITORING=1 ./up.sh   # operator + test apps only
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+
+require kind
+require kubectl
+require helm
+require docker
+
+# 1. Cluster ------------------------------------------------------------------
+if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+  log "kind cluster '${CLUSTER_NAME}' already exists; reusing it."
+else
+  log "creating kind cluster '${CLUSTER_NAME}'..."
+  kind create cluster --name "${CLUSTER_NAME}"
+fi
+kind export kubeconfig --name "${CLUSTER_NAME}"
+
+# 2. Operator image -----------------------------------------------------------
+log "building operator image ${IMAGE_NAME}:${IMAGE_TAG}..."
+docker build -f "${DOCKERFILE}" -t "${IMAGE_NAME}:${IMAGE_TAG}" "${OPERATOR_DIR}"
+kind load docker-image "${IMAGE_NAME}:${IMAGE_TAG}" --name "${CLUSTER_NAME}"
+
+# 3. Monitoring ---------------------------------------------------------------
+if [ -z "${SKIP_MONITORING:-}" ]; then
+  log "installing kube-prometheus-stack in namespace ${MONITORING_NAMESPACE}..."
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+  helm repo update prometheus-community >/dev/null
+  helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+    --namespace "${MONITORING_NAMESPACE}" --create-namespace \
+    --set grafana.sidecar.dashboards.enabled=true \
+    --set grafana.sidecar.dashboards.searchNamespace=ALL \
+    --set grafana.adminPassword=admin \
+    --wait --timeout 10m
+  SM_ARGS=(--set metrics.serviceMonitor.enabled=true --set metrics.serviceMonitor.labels.release=monitoring)
+else
+  warn "SKIP_MONITORING set — Prometheus/Grafana not installed."
+  SM_ARGS=()
+fi
+
+# 4. Operator chart ------------------------------------------------------------
+log "installing ai-confidential-operator chart (release ${HELM_RELEASE})..."
+helm upgrade --install "${HELM_RELEASE}" "${CHART_DIR}" \
+  --namespace "${NAMESPACE}" --create-namespace \
+  --set image.repository="${IMAGE_NAME}" \
+  --set image.tag="${IMAGE_TAG}" \
+  --set image.pullPolicy=Never \
+  "${SM_ARGS[@]}" \
+  --wait --timeout 5m
+
+# 5. Test applications (simulated attestation chain) -----------------------------
+log "applying test applications in namespace ${DEMO_NAMESPACE}..."
+kubectl create namespace "${DEMO_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace "${DEMO_NAMESPACE}" confidential-ai/enabled=true --overwrite
+kubectl -n "${DEMO_NAMESPACE}" apply -f "${HERE}/test-apps/"
+
+# 6. Grafana dashboard -----------------------------------------------------------
+if [ -z "${SKIP_MONITORING:-}" ]; then
+  log "importing the attestation Grafana dashboard..."
+  kubectl -n "${MONITORING_NAMESPACE}" create configmap confidential-overview-dashboard \
+    --from-file=confidential-overview.json="${HERE}/dashboards/confidential-overview.json" \
+    --dry-run=client -o yaml | kubectl apply -f -
+  kubectl -n "${MONITORING_NAMESPACE}" label configmap confidential-overview-dashboard \
+    grafana_dashboard="1" --overwrite
+fi
+
+# 7. Summary ----------------------------------------------------------------------
+sleep 10
+kubectl get runtimeclasses | grep simulated || true
+kubectl -n "${DEMO_NAMESPACE}" get cip,rar,aevid,akrp,airvp,aier 2>/dev/null || true
+
+cat <<SUMMARY
+
+============================================================
+ ai-confidential-operator is up on kind cluster '${CLUSTER_NAME}'.
+
+ The operator bootstrapped the SIMULATED runtime classes
+ (simulated-kata-qemu-tdx / simulated-kata-qemu-snp) and the pod
+ injection/validation webhooks. The test apps install a simulated
+ attestation chain (RawAttestationReport -> AttestationEvidence)
+ plus key-release / revocation / audit policies.
+
+ Verify:
+   kubectl -n ${NAMESPACE} get deploy
+   kubectl -n ${DEMO_NAMESPACE} get attestationevidence -o wide
+   kubectl -n ${DEMO_NAMESPACE} get pod confidential-demo-app -o jsonpath='{.spec.runtimeClassName}'
+
+ Grafana (admin / admin):
+   kubectl -n ${MONITORING_NAMESPACE} port-forward svc/monitoring-grafana 3000:80
+   -> http://localhost:3000  (dashboard: "AI Confidential Operator — Attestation & Placement")
+
+ Production note: real SEV-SNP/TDX appraisal requires the dedicated
+ central-verifier and node-attestation-agent deployments (single-writer
+ evidence chain) — see the operator README.
+
+ Tear down:  ./down.sh
+============================================================
+SUMMARY

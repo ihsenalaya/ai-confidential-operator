@@ -1,0 +1,37 @@
+# Simulated attestation chain for kind. In production the
+# node-attestation-agent emits RawAttestationReport objects and the
+# central-verifier (single writer) appraises them into AttestationEvidence.
+apiVersion: aiops.imperium.io/v1alpha1
+kind: RawAttestationReport
+metadata:
+  name: demo-node-report
+spec:
+  nodeName: confidential-operator-control-plane
+  provider: simulator
+  simulated: true
+  collectedAt: "2026-07-16T12:00:00Z"
+  rawTokenHash: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+---
+apiVersion: aiops.imperium.io/v1alpha1
+kind: AttestationEvidence
+metadata:
+  name: demo-node-evidence
+spec:
+  subjectRef:
+    name: confidential-operator-control-plane
+  evidenceType: cpu
+  tee: SEV-SNP
+  simulated: true
+  freshness:
+    maxAgeSeconds: 3600
+    simulated: true
+---
+apiVersion: aiops.imperium.io/v1alpha1
+kind: AIEvidenceRecord
+metadata:
+  name: demo-evidence-record
+spec:
+  category: attestation
+  subjectRef:
+    name: demo-node-evidence
+  retentionDays: 30

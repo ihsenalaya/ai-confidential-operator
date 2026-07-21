@@ -1,0 +1,17 @@
+apiVersion: v2
+name: ai-confidential-operator
+description: AI Confidential Operator — standalone confidential-computing control plane (RATS attestation chain, verifiable placement, key release, revocation, evidence audit) for AI workloads on TEE nodes (SEV-SNP/TDX, simulated mode for kind).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - confidential-computing
+  - attestation
+  - sev-snp
+  - kubernetes-operator
+  - ai
+home: https://github.com/ihsenalaya/ai-confidential-operator
+sources:
+  - https://github.com/ihsenalaya/ai-confidential-operator
+maintainers:
+  - name: ihsenalaya

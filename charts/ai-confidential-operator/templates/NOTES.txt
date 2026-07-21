@@ -1,0 +1,26 @@
+AI Confidential Operator installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+This operator owns the confidential-computing CRDs (attestation evidence,
+placement decisions, key release, revocation, evidence audit) and hosts the
+confidential pod injection/validation webhooks. On kind it bootstraps the
+simulated runtime classes automatically.
+
+1. Check the controller is running:
+   kubectl -n {{ .Release.Namespace }} get deploy {{ include "operator.fullname" . }}
+
+2. Apply a policy and simulated evidence (see the test-apps samples in
+   operators/ai-confidential-operator/automatisation/test-apps):
+   kubectl apply -f test-apps/
+
+3. Inspect the chain:
+   kubectl get cip,rar,aevid,apd,akrp,airvp,aier -A
+   kubectl get attestationevidence -o wide
+
+4. Production notes:
+   - The dedicated central-verifier binary is the single writer of
+     AttestationEvidence; the embedded fallbacks stay disabled by default.
+   - Real SEV-SNP/TDX appraisal requires the node-attestation-agent DaemonSet
+     and central-verifier deployment (see the confidential platform chart).
+
+Import automatisation/dashboards/confidential-overview.json into Grafana for
+the attestation & placement dashboard.

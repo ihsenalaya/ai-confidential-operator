@@ -1,0 +1,63 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - aiops.imperium.io
+  resources:
+  - aievidencerecords
+  - aikeyreleasepolicies
+  - aiplacementdecisions
+  - airevocationpolicies
+  - attestationevidences
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - aiops.imperium.io
+  resources:
+  - aievidencerecords/finalizers
+  - aikeyreleasepolicies/finalizers
+  - aiplacementdecisions/finalizers
+  - airevocationpolicies/finalizers
+  - attestationevidences/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - aiops.imperium.io
+  resources:
+  - aievidencerecords/status
+  - aikeyreleasepolicies/status
+  - aiplacementdecisions/status
+  - airevocationpolicies/status
+  - attestationevidences/status
+  - rawattestationreports/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - aiops.imperium.io
+  resources:
+  - confidentialinferencepolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - aiops.imperium.io
+  resources:
+  - rawattestationreports
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch

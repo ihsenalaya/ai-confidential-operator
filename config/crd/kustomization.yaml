@@ -1,0 +1,18 @@
+# This kustomization.yaml is not intended to be run by itself,
+# since it depends on service name and namespace that are out of this kustomize package.
+# It should be run by config/default
+resources:
+- bases/aiops.imperium.io_confidentialinferencepolicies.yaml
+- bases/aiops.imperium.io_attestationevidences.yaml
+- bases/aiops.imperium.io_aiplacementdecisions.yaml
+- bases/aiops.imperium.io_aikeyreleasepolicies.yaml
+- bases/aiops.imperium.io_aievidencerecords.yaml
+- bases/aiops.imperium.io_airevocationpolicies.yaml
+- bases/aiops.imperium.io_rawattestationreports.yaml
+#+kubebuilder:scaffold:crdkustomizeresource
+
+# [WEBHOOK] To enable webhook, uncomment the following section
+# the following config is for teaching kustomize how to do kustomization for CRDs.
+
+#configurations:
+#- kustomizeconfig.yaml
