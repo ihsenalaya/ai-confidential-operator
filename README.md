@@ -24,6 +24,7 @@ autre opérateur.
 - [Architecture](#architecture)
 - [Les 7 CRDs, expliquées simplement](#les-7-crds-expliquées-simplement)
 - [Comment les décisions sont prises](#comment-les-décisions-sont-prises)
+  - [Le scheduling d'un pod confidentiel, en détail](#le-scheduling-dun-pod-confidentiel-en-détail)
 - [Binaires & images](#binaires--images)
 - [Installation](#installation)
 - [Démarrage rapide (kind)](#démarrage-rapide-kind)
@@ -228,10 +229,100 @@ Vue simple d'abord ; le détail exact (codes de refus, algorithme du scheduler) 
 - **Placement d'un pod** : le scheduler ne retient que les nœuds avec une évidence valide et
   fraîche, revérifie tout **une seconde fois juste avant de lier le pod** (pour ne rien laisser
   changer entre la sélection et l'exécution), puis seulement à ce moment-là signe et publie la
-  décision.
+  décision. Schéma détaillé juste en dessous.
 - **Admission des pods** : un pod couvert par une `ConfidentialInferencePolicy` peut être
   annoté/corrigé automatiquement (runtime class, scheduler) ou rejeté selon que la politique est
   en `warn`, `audit` ou `enforce`.
+
+### Le scheduling d'un pod confidentiel, en détail
+
+`attestation-scheduler` **n'est pas un plugin du scheduler par défaut de Kubernetes** — c'est
+un second scheduler complet, qui tourne en parallèle, à côté du scheduler standard. Les deux
+coexistent sans se gêner : chaque pod choisit lequel doit le placer via un seul champ de sa
+spec :
+
+```yaml
+spec:
+  schedulerName: ai-attestation-scheduler   # sinon, le scheduler par défaut le prend en charge
+```
+
+Le scheduler par défaut ignore tous les pods qui portent ce nom ; symétriquement,
+`attestation-scheduler` n'observe **que** ceux-là. Une fois qu'un tel pod apparaît, il traverse
+six étapes, dans cet ordre :
+
+```
+ Pod créé avec schedulerName: ai-attestation-scheduler
+                          │
+                          ▼
+ ① PreFilter   charge la ConfidentialInferencePolicy dont le namespaceSelector/
+                workloadSelector correspond à ce pod (aucune policy → le pod
+                n'est pas géré par ce scheduler)
+                          │
+                          ▼
+ ② Filter      liste tous les nœuds du cluster, élimine :
+                  • les nœuds non-schedulable, ou dont le nodeSelector/taint
+                    du pod (ou de sa RuntimeClass) n'est pas satisfait
+                  • PUIS ne garde que ceux qui ont au moins une
+                    AttestationEvidence : non révoquée, vérifiée (Verified=true),
+                    assez fraîche (< maxEvidenceAgeSeconds) et du bon type de
+                    TEE (requiredTEE)
+                          │
+                 candidats trouvés ? ──oui──┐
+                          │ non              │
+                          ▼                  │
+ ③ Permit      relance l'étape ② toutes      │
+                les 250 ms, jusqu'à 15 s     │
+                (laisse le temps à une       │
+                évidence en cours de         │
+                vérification d'arriver)      │
+                          │                  │
+                 toujours aucun ? ──▶ échec  │
+                (le pod reste Pending)       │
+                          │                  │
+                          └────────┬─────────┘
+                                   ▼
+ ④ Score       chaque nœud candidat part de 100 points, puis :
+                  + jusqu'à 50 points selon la fraîcheur de son évidence
+                  + 20 points si l'évidence n'est pas simulée
+                  + 10 points (TDX) ou 5 points (SEV-SNP)
+                → tri décroissant, le nœud le mieux noté est retenu
+                          │
+                          ▼
+ ⑤ Reserve     crée l'AIPlacementDecision avec status.decision = "pending"
+                          │
+                          ▼
+    PreBind    🔒 fail-closed, obligatoire : relit À CET INSTANT PRÉCIS le
+   (dans        pod, la policy et l'évidence sélectionnée, et revérifie que
+   Reserve)     rien n'a changé depuis l'étape ② (même empreinte de policy,
+                évidence toujours non révoquée et toujours dans sa fenêtre
+                de fraîcheur). Un seul écart → status.decision = "deny",
+                et AUCUN jeton n'est émis : la réservation s'arrête là.
+                          │
+                     PreBind passé
+                          ▼
+      Mint      un jeton signé Ed25519 est créé, liant ensemble : l'UID du
+                pod, l'empreinte de sa spec, le digest de l'image et du
+                modèle, le nom du nœud, l'empreinte de la policy et celle
+                de l'évidence — avec une expiration (5 min par défaut).
+                L'AIPlacementDecision passe à status.decision = "allow",
+                le jeton est stocké dans une annotation.
+                          │
+                          ▼
+ ⑥ Bind        le pod est lié au nœud choisi via l'API Binding native de
+                Kubernetes — le scheduler par défaut n'intervient à aucun
+                moment de ce flux.
+```
+
+**Pourquoi une revérification à l'étape PreBind, alors que l'étape ② vient déjà de tout
+vérifier ?** Entre le moment où un nœud est choisi (Score) et celui où le pod y est
+effectivement lié (Bind), un peu de temps s'écoule — le temps qu'une évidence expire, qu'une
+policy change, ou qu'une révocation arrive. Sans cette seconde vérification, un pod pourrait
+être lié sur la base d'une évidence qui n'est déjà plus valide au moment de l'exécution. En
+revérifiant juste avant le `Bind`, cette fenêtre est réduite au minimum : c'est ce que la
+[section sécurité](#modèle-de-sécurité) appelle le comportement *fail-closed* du scheduler.
+
+`verify-placement` (CLI) permet de revérifier ce jeton entièrement hors cluster, à partir de la
+seule clé publique — utile pour qu'un tiers audite une décision sans accès au cluster.
 
 ## Binaires & images
 
@@ -352,22 +443,12 @@ donc une vérification partielle, la décision opposable se fait au moment de l'
 </details>
 
 <details>
-<summary><strong>Algorithme du scheduler d'attestation</strong> (<code>attestation-scheduler</code>)</summary>
+<summary><strong>Algorithme du scheduler d'attestation</strong> — schéma complet et code source</summary>
 
-1. **Filter** : ne garde que les nœuds avec au moins une évidence valide, non révoquée, fraîche
-   et du bon type de TEE.
-2. **Permit** : attend jusqu'à 15s qu'un nœud devienne éligible si aucun ne l'est encore.
-3. **Score** : jusqu'à 50 points de fraîcheur, +20 si l'évidence n'est pas simulée, +10/+5 pour
-   TDX/SEV-SNP.
-4. **Reserve → PreBind fail-closed** : juste avant de lier le pod, tout est revérifié une
-   seconde fois (politique, révocation, fraîcheur) pour fermer la fenêtre entre la sélection et
-   l'exécution — un échec ici annule la décision et n'émet **aucun jeton**.
-5. **Mint** : le jeton Ed25519 lie `podUID`, le hash du pod, les digests d'image/modèle,
-   l'identité du nœud et le hash de la politique, avec une expiration (5 min par défaut).
-6. **Bind** : le pod est lié au nœud.
-
-`verify-placement` vérifie ce jeton entièrement hors cluster, à partir de la clé publique
-seule.
+Le schéma détaillé des 6 étapes (PreFilter → Filter → Permit → Score → Reserve/PreBind → Bind)
+est dans [Le scheduling d'un pod confidentiel, en détail](#le-scheduling-dun-pod-confidentiel-en-détail)
+ci-dessus. Implémentation exacte : `internal/scheduler/scheduler.go` (`SchedulePod`,
+`filter`, `score`, `reserveTimed`, `preBind`).
 
 </details>
 
