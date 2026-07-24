@@ -400,6 +400,18 @@ sont normalement produites automatiquement par la plateforme (voir
 [Les 7 CRDs](#les-7-crds-expliquées-simplement)) — la console permet de les consulter, mais
 les créer/modifier à la main n'a de sens qu'en dev/debug.
 
+### Avec le cluster kind de démo
+
+Lance d'abord [Démarrage rapide (kind)](#démarrage-rapide-kind) (`cd automatisation &&
+./up.sh`), qui bascule le contexte `kubectl` courant sur le cluster créé. `go run
+./cmd/console-api` s'y connecte ensuite sans rien configurer de plus, et affiche la chaîne
+d'attestation simulée réellement créée par `automatisation/test-apps/` (politique,
+évidence, clé de libération, révocation).
+
+**Validé de bout en bout** de cette façon : cluster kind réel, `confidential-manager` réel qui
+réconcilie et bootstrappe les runtime classes simulées, console pointée dessus sans
+configuration additionnelle — pas seulement contre envtest.
+
 ## Configuration
 
 Variables les plus utiles (liste complète par binaire dans [`docs/`](docs/) et le code de
