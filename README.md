@@ -377,40 +377,44 @@ Démontage : `./down.sh`.
 
 ## Console graphique
 
-Pour créer/modifier les CRDs sans écrire de YAML à la main : une petite interface web
-(`ui/console`) et une API REST générique (`console-api`) qui la sert. Aucun compte de
-service dédié — l'outil se connecte avec **ton propre kubeconfig** (celui déjà utilisé par
-`kubectl`), donc chaque action passe par tes propres droits RBAC sur le cluster.
+Une interface web pour créer/modifier les CRDs sans écrire de YAML à la main —
+**déployée automatiquement avec l'opérateur**, dans le cluster, comme n'importe où d'autre
+tu installes ce chart (`console.enabled: true` par défaut).
+
+Elle tourne avec son **propre ServiceAccount et son propre RBAC**, scopé uniquement aux 7
+CRDs de cet opérateur (`charts/ai-confidential-operator/templates/console-rbac.yaml`) — pas
+de compte de service partagé avec `confidential-manager`, pas de dépendance à un kubeconfig
+personnel.
 
 ```bash
-cd ui/console
-npm install
-npm run build
-cd ../..
-
-go run ./cmd/console-api
+kubectl -n <namespace> port-forward svc/<release>-ai-confidential-operator-console 8090:8090
 # → http://localhost:8090
 ```
 
-Options utiles : `--kubeconfig=/chemin/vers/config`, `--context=mon-cluster`, `--addr=:9090`.
 La console lit le schéma OpenAPI de chaque CRD directement depuis le cluster et génère un
 formulaire à partir de ce schéma — un bouton **« Voir en YAML »** reste disponible à tout
 moment. Rappel utile : `RawAttestationReport`, `AttestationEvidence` et `AIPlacementDecision`
 sont normalement produites automatiquement par la plateforme (voir
 [Les 7 CRDs](#les-7-crds-expliquées-simplement)) — la console permet de les consulter, mais
-les créer/modifier à la main n'a de sens qu'en dev/debug.
+les créer/modifier à la main n'a de sens qu'en dev/debug. Désactivable via
+`--set console.enabled=false`.
+
+### En développement local (sans passer par le chart)
+
+`go run ./cmd/console-api` détecte automatiquement s'il tourne hors cluster et se rabat sur
+ton kubeconfig local (`--kubeconfig`/`--context`/`--addr=:9090` pour surcharger) — même
+binaire, seule la source des identifiants change.
 
 ### Avec le cluster kind de démo
 
-Lance d'abord [Démarrage rapide (kind)](#démarrage-rapide-kind) (`cd automatisation &&
-./up.sh`), qui bascule le contexte `kubectl` courant sur le cluster créé. `go run
-./cmd/console-api` s'y connecte ensuite sans rien configurer de plus, et affiche la chaîne
-d'attestation simulée réellement créée par `automatisation/test-apps/` (politique,
-évidence, clé de libération, révocation).
+Le [Démarrage rapide (kind)](#démarrage-rapide-kind) (`cd automatisation && ./up.sh`)
+construit aussi l'image de la console et l'installe via le chart — elle est donc déjà là,
+dans le cluster, une fois le script terminé.
 
 **Validé de bout en bout** de cette façon : cluster kind réel, `confidential-manager` réel qui
-réconcilie et bootstrappe les runtime classes simulées, console pointée dessus sans
-configuration additionnelle — pas seulement contre envtest.
+réconcilie et bootstrappe les runtime classes simulées, pod `console-api` réel dans le
+cluster connecté via son propre ServiceAccount — pas un processus local, pas seulement
+contre envtest.
 
 ## Configuration
 
