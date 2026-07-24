@@ -28,6 +28,7 @@ autre opérateur.
 - [Binaires & images](#binaires--images)
 - [Installation](#installation)
 - [Démarrage rapide (kind)](#démarrage-rapide-kind)
+- [Console graphique](#console-graphique)
 - [Configuration](#configuration)
 - [Métriques Prometheus](#métriques-prometheus)
 - [Modèle de sécurité](#modèle-de-sécurité)
@@ -373,6 +374,31 @@ kubectl -n confidential-demo get cip,rar,aevid,akrp,airvp,aier
 ```
 
 Démontage : `./down.sh`.
+
+## Console graphique
+
+Pour créer/modifier les CRDs sans écrire de YAML à la main : une petite interface web
+(`ui/console`) et une API REST générique (`console-api`) qui la sert. Aucun compte de
+service dédié — l'outil se connecte avec **ton propre kubeconfig** (celui déjà utilisé par
+`kubectl`), donc chaque action passe par tes propres droits RBAC sur le cluster.
+
+```bash
+cd ui/console
+npm install
+npm run build
+cd ../..
+
+go run ./cmd/console-api
+# → http://localhost:8090
+```
+
+Options utiles : `--kubeconfig=/chemin/vers/config`, `--context=mon-cluster`, `--addr=:9090`.
+La console lit le schéma OpenAPI de chaque CRD directement depuis le cluster et génère un
+formulaire à partir de ce schéma — un bouton **« Voir en YAML »** reste disponible à tout
+moment. Rappel utile : `RawAttestationReport`, `AttestationEvidence` et `AIPlacementDecision`
+sont normalement produites automatiquement par la plateforme (voir
+[Les 7 CRDs](#les-7-crds-expliquées-simplement)) — la console permet de les consulter, mais
+les créer/modifier à la main n'a de sens qu'en dev/debug.
 
 ## Configuration
 
